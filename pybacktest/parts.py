@@ -10,8 +10,28 @@ Usable both in backtesting and production.
 import pandas
 
 
-def signals_to_positions(signals, init_pos=0,
-                         mask=('Buy', 'Sell', 'Short', 'Cover')):
+def _signals_to_positions_loop(long_enter, long_exit,
+                               short_enter, short_exit,
+                               pos, result):
+    for i in range(long_enter.shape[0]):
+        close_long  = pos[0] > 0 and long_exit[i]
+        close_short = pos[0] < 0 and short_exit[i]
+        pos[0] = 0 if close_long or close_short else pos[0]
+        pos[0] = long_enter[i] - short_enter[i] if pos[0] == 0 else pos[0]
+        result[i] = pos[0]
+
+try:
+    import numba
+    _signals_to_positions_loop = numba.guvectorize(
+        ['void(int32[:], int32[:], int32[:], int32[:], int32[:], int32[:])',
+         'void(int64[:], int64[:], int64[:], int64[:], int64[:], int64[:])',
+        ], '(m),(m),(m),(m),(n)->(m)')(_signals_to_positions_loop)
+
+except ImportError:
+    pass
+
+
+def signals_to_positions(signals, init_pos=0, mask=('Buy','Sell','Short','Cover')):
     """
     Translate signal dataframe into positions series (trade prices aren't
     specified.
@@ -19,23 +39,13 @@ def signals_to_positions(signals, init_pos=0,
     extreme caution.
     """
     long_en, long_ex, short_en, short_ex = mask
-    pos = init_pos
     ps = pandas.Series(0., index=signals.index)
-    for t, sig in signals.iterrows():
-        # check exit signals
-        if pos != 0:  # if in position
-            if pos > 0 and sig[long_ex]:  # if exit long signal
-                pos -= sig[long_ex]
-            elif pos < 0 and sig[short_ex]:  # if exit short signal
-                pos += sig[short_ex]
-        # check entry (possibly right after exit)
-        if pos == 0:
-            if sig[long_en]:
-                pos += sig[long_en]
-            elif sig[short_en]:
-                pos -= sig[short_en]
-        ps[t] = pos
+    _signals_to_positions_loop(
+             signals[long_en], signals[long_ex],
+             signals[short_en], signals[short_ex],
+             [init_pos], ps.values)
     return ps[ps != ps.shift()]
+
 
 
 def trades_to_equity(trd):
